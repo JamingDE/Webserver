@@ -4,11 +4,16 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Render läuft hinter einem Proxy, das müssen wir Express sagen, 
-// damit wir die ECHTEN IP-Adressen der Angreifer bekommen.
 app.set('trust proxy', 1);
 
-let gespeicherterText = "Kein Text hinterlegt.";
+// WICHTIG: Das hier verbietet dem Browser das Caching. 
+// Es fixt den Fehler, dass man erst F5 drücken muss!
+app.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    next();
+});
+
+let gespeicherterTextBase64 = Buffer.from("Kein Text hinterlegt.").toString('base64');
 const ADMIN_PASSWORT = process.env.ADMIN_PASSWORD || "Achtung_Du_Musst_Ein_Passwort_Bei_Render_Eintragen_123456789";
 
 app.use(express.urlencoded({ extended: true }));
@@ -18,26 +23,20 @@ app.use(session({
     secret: 'ein-zufälliger-geheimer-schlüssel-für-cookies',
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 30 * 60 * 1000 } // 30 Minuten gültig
+    cookie: { maxAge: 30 * 60 * 1000 }
 }));
 
-// --- COOLDOWN SYSTEM (Rate Limiting) ---
-// Maximal 5 Login-Versuche pro IP alle 15 Minuten
 const loginLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 Minuten
-    max: 5, // Maximal 5 Versuche
-    message: '<h1>Zu viele Fehlversuche!</h1><p>Diese IP wurde für 15 Minuten gesperrt. Bitte warte, bevor du es erneut versuchst.</p>',
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: '<h1>Zu viele Fehlversuche!</h1><p>Bitte warte 15 Minuten.</p>',
     standardHeaders: true,
     legacyHeaders: false,
 });
 
-function entschärfeText(text) {
-    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-}
-
-// 1. Startseite
+// 1. Startseite: Schickt ein komplett leeres Dokument (wirkt wie about:blank)
 app.get('/', (req, res) => {
-    res.send(`<h1>Willkommen!</h1><p>Aktueller Text: <b>${entschärfeText(gespeicherterText)}</b></p>`);
+    res.send('<!DOCTYPE html><html><head><title>about:blank</title></head><body></body></html>');
 });
 
 // 2. Login-Maske
@@ -54,7 +53,6 @@ app.get('/admin', (req, res) => {
     `);
 });
 
-// Hier greift jetzt die IP-Sperre (loginLimiter) bei jedem Login-Versuch!
 app.post('/admin/login', loginLimiter, (req, res) => {
     const { password } = req.body;
     if (password === ADMIN_PASSWORT) {
@@ -68,12 +66,16 @@ app.post('/admin/login', loginLimiter, (req, res) => {
 // 3. Das Dashboard
 app.get('/admin/dashboard', (req, res) => {
     if (!req.session.eingeloggt) {
-        return res.redirect('/admin'); // Schickt unbefugte User elegant zurück zum Login
+        return res.redirect('/admin');
     }
+
+    // Wir decodieren den Text kurz für dich im Dashboard, damit du siehst, was drin steht
+    const normalerText = Buffer.from(gespeicherterTextBase64, 'base64').toString('utf-8');
 
     res.send(`
         <h1>Admin Dashboard</h1>
-        <p>Aktueller Text auf dem Server: <b>${entschärfeText(gespeicherterText)}</b></p>
+        <p>Aktueller Text (Klartext): <b>${normalerText}</b></p>
+        <p>Aktueller Text (Base64): <code>${gespeicherterTextBase64}</code></p>
         <form action="/admin/update-text" method="POST">
             <input type="text" name="neuerText" placeholder="Neue Textzeile" required style="width: 300px;"><br><br>
             <button type="submit">Text aktualisieren</button>
@@ -87,7 +89,8 @@ app.post('/admin/update-text', (req, res) => {
     if (!req.session.eingeloggt) {
         return res.status(403).send('Zugriff verweigert!');
     }
-    gespeicherterText = req.body.neuerText;
+    // Hier wandeln wir deinen Text direkt in Base64 um, bevor er gespeichert wird!
+    gespeicherterTextBase64 = Buffer.from(req.body.neuerText).toString('base64');
     res.redirect('/admin/dashboard');
 });
 
@@ -96,20 +99,29 @@ app.get('/admin/logout', (req, res) => {
     res.redirect('/admin');
 });
 
-// 4. HEADLESS Aufruf mit automatischer Selbstzerstörung!
+// 4. Intelligenter HEADLESS Aufruf auf der Route /headless
 app.get('/headless', (req, res) => {
+    const userAgent = req.headers['user-agent'] || '';
+    
+    // Prüfen, ob der Aufruf von einem normalen Browser kommt (Firefox, Chrome, Safari, Edge, Brave etc.)
+    const istBrowser = /Mozilla|Chrome|Safari|Firefox|Edge|Brave/i.test(userAgent);
+
+    if (istBrowser) {
+        // Wenn es ein normaler Browser ist, tun wir so, als gäbe es hier nichts (Leere Seite)
+        return res.send('<!DOCTYPE html><html><head><title>about:blank</title></head><body></body></html>');
+    }
+
+    // Wenn es HEADLESS ist (Terminal, curl, wget, python-skript etc.):
     res.set('Content-Type', 'text/plain; charset=utf-8');
     
-    // 1. Wir merken uns den aktuellen Text
-    const textZuSenden = gespeicherterText;
+    const textZuSenden = gespeicherterTextBase64;
     
-    // 2. Wir löschen den Text SOFORT auf dem Server
-    gespeicherterText = "Kein Text hinterlegt (wurde bereits abgegriffen).";
+    // Text nach dem Abgreifen sofort zerstören
+    gespeicherterTextBase64 = Buffer.from("Kein Text hinterlegt.").toString('base64');
     
-    // 3. Wir senden den gemerkten Text an den Aufrufer
     res.send(textZuSenden);
 });
 
 app.listen(PORT, () => {
-    console.log(`Hochsicherer Server läuft auf Port ${PORT}`);
+    console.log(`Server läuft auf Port ${PORT}`);
 });
