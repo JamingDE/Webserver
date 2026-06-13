@@ -62,7 +62,6 @@ wss.on('connection', (ws, req) => {
     const url = new URL(req.url, 'http://' + req.headers.host);
     const type = url.searchParams.get('type');
     
-    // Heartbeat für diese Connection starten
     ws.isAlive = true;
     ws.on('pong', function() {
         ws.isAlive = true;
@@ -107,7 +106,6 @@ function handleClientWebSocket(ws, url) {
                     }));
                     console.log('[WS CLIENT] ' + pcId + ' verbunden');
                     
-                    // Admins informieren
                     broadcastToAdmins({
                         type: 'pc-status',
                         pcId: pcId,
@@ -276,27 +274,49 @@ app.post('/output', (req, res) => {
     } catch (e) { res.status(500).json({ error: 'Base64 Fehler' }); }
 });
 
-// ==================== BEFEHL ====================
+// ==================== BEFEHL (Ohne Queue) ====================
 app.post('/command', (req, res) => {
-    if (!req.session.eingeloggt) return res.status(403).send('Zugriff verweigert!');
+    if (!req.session.eingeloggt) return res.status(403).json({ error: 'Zugriff verweigert!' });
     const target = req.body.target;
     const command = req.body.command;
-    if (!command) return res.status(400).send('Befehl erforderlich');
     
+    if (!command) {
+        return res.status(400).json({ error: 'Befehl erforderlich' });
+    }
+    
+    // ========== ALLE PCs ==========
     if (target === 'all') {
-        for (const id in registeredTokens) {
-            if (!sendCommandToPC(id, command)) {
-                pcCommands[id] = encrypt(command);
+        const onlinePCs = Object.keys(registeredTokens).filter(function(id) {
+            return clientConnections.has(id);
+        });
+        
+        if (onlinePCs.length === 0) {
+            return res.json({ error: 'Keine PCs online' });
+        }
+        
+        let sentCount = 0;
+        onlinePCs.forEach(function(id) {
+            if (sendCommandToPC(id, command)) {
+                sentCount++;
             }
-        }
-        res.json({ status: 'Gesendet an ALLE PCs' });
-    } else if (registeredTokens[target]) {
-        if (!sendCommandToPC(target, command)) {
-            pcCommands[target] = encrypt(command);
-        }
-        res.json({ status: 'Gesendet an ' + target });
+        });
+        
+        return res.json({ status: 'Gesendet an ' + sentCount + '/' + onlinePCs.length + ' PCs' });
+    }
+    
+    // ========== EINZELNER PC ==========
+    if (!registeredTokens[target]) {
+        return res.json({ error: 'PC "' + target + '" nicht gefunden' });
+    }
+    
+    if (!clientConnections.has(target)) {
+        return res.json({ error: 'PC "' + target + '" ist offline' });
+    }
+    
+    if (sendCommandToPC(target, command)) {
+        res.json({ status: 'Befehl an "' + target + '" gesendet' });
     } else {
-        res.status(404).json({ error: 'PC nicht gefunden' });
+        res.json({ error: 'PC "' + target + '" ist offline' });
     }
 });
 
@@ -308,7 +328,7 @@ app.get('/pcs', (req, res) => {
         const d = entry[1];
         return {
             id: id, 
-            online: d.online, 
+            online: clientConnections.has(id),
             lastSeen: new Date(d.lastSeen).toLocaleString('de-DE'),
             outputCount: pcOutputs[id] ? pcOutputs[id].length : 0
         };
@@ -357,12 +377,10 @@ app.get('/admin/logout', (req, res) => {
     res.redirect('/admin');
 });
 
-// ==================== HEARTBEAT INTERVAL ====================
-// Ping alle 20 Sekunden (nicht 30, um vor Render Timeout zu sein)
+// ==================== HEARTBEAT ====================
 const heartbeatInterval = setInterval(function() {
     wss.clients.forEach(function(ws) {
         if (ws.isAlive === false) {
-            console.log('[HEARTBEAT] Connection terminated (no pong)');
             return ws.terminate();
         }
         ws.isAlive = false;
