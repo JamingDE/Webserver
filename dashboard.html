@@ -228,16 +228,22 @@ function sendCommand() {
         return;
     }
     
+    debug('Step 1: history push');
     history.push(cmd);
     hIdx = history.length;
+    
+    debug('Step 2: get target');
     var t = target.value;
-    
     debug('Target: ' + t);
-    debug('Schicke Befehl an Server...');
     
+    debug('Step 3: add prompt');
     add('prompt', promptText.textContent + ' ' + cmd);
+    
+    debug('Step 4: clear input');
     input.value = '';
     input.focus();
+    
+    debug('Step 5: fetch command');
     
     fetch('/command', {
         method: 'POST',
