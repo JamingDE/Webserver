@@ -9,7 +9,11 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ 
+    server,
+    perMessageDeflate: false,
+    maxPayload: 1024 * 1024
+});
 const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1);
@@ -58,6 +62,12 @@ wss.on('connection', (ws, req) => {
     const url = new URL(req.url, 'http://' + req.headers.host);
     const type = url.searchParams.get('type');
     
+    // Heartbeat für diese Connection starten
+    ws.isAlive = true;
+    ws.on('pong', function() {
+        ws.isAlive = true;
+    });
+    
     if (type === 'client') {
         handleClientWebSocket(ws, url);
     } else if (type === 'admin') {
@@ -96,6 +106,13 @@ function handleClientWebSocket(ws, url) {
                         pcId: pcId 
                     }));
                     console.log('[WS CLIENT] ' + pcId + ' verbunden');
+                    
+                    // Admins informieren
+                    broadcastToAdmins({
+                        type: 'pc-status',
+                        pcId: pcId,
+                        online: true
+                    });
                     break;
                     
                 case 'heartbeat':
@@ -135,7 +152,7 @@ function handleClientWebSocket(ws, url) {
         }
     });
     
-    ws.on('close', () => {
+    ws.on('close', function() {
         if (pcId) {
             registeredTokens[pcId].online = false;
             clientConnections.delete(pcId);
@@ -149,24 +166,21 @@ function handleClientWebSocket(ws, url) {
         }
     });
     
-    ws.on('error', (err) => {
+    ws.on('error', function(err) {
         console.error('[WS FEHLER] ' + (pcId || 'unknown') + ':', err.message);
     });
-    
-    ws.isAlive = true;
-    ws.on('pong', () => { ws.isAlive = true; });
 }
 
 function handleAdminWebSocket(ws) {
     adminConnections.add(ws);
     console.log('[WS ADMIN] Verbunden');
     
-    ws.on('close', () => {
+    ws.on('close', function() {
         adminConnections.delete(ws);
         console.log('[WS ADMIN] Getrennt');
     });
     
-    ws.on('error', (err) => {
+    ws.on('error', function(err) {
         console.error('[WS ADMIN FEHLER]', err.message);
     });
 }
@@ -343,14 +357,18 @@ app.get('/admin/logout', (req, res) => {
     res.redirect('/admin');
 });
 
-// Heartbeat Interval
+// ==================== HEARTBEAT INTERVAL ====================
+// Ping alle 20 Sekunden (nicht 30, um vor Render Timeout zu sein)
 const heartbeatInterval = setInterval(function() {
     wss.clients.forEach(function(ws) {
-        if (ws.isAlive === false) return ws.terminate();
+        if (ws.isAlive === false) {
+            console.log('[HEARTBEAT] Connection terminated (no pong)');
+            return ws.terminate();
+        }
         ws.isAlive = false;
         ws.ping();
     });
-}, 30000);
+}, 20000);
 
 wss.on('close', function() {
     clearInterval(heartbeatInterval);
