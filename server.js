@@ -118,12 +118,16 @@ function handleClientWebSocket(ws, url) {
                         registeredTokens[pcId].lastSeen = Date.now();
                         registeredTokens[pcId].online = true;
                     }
+                    // WICHTIG: Client-Heartbeat zählt auch als "alive" für Ping/Pong
+                    ws.isAlive = true;
                     break;
                     
                 case 'output':
                     if (pcId && token && registeredTokens[pcId] && registeredTokens[pcId].token === token) {
                         try {
                             const output = Buffer.from(msg.data, 'base64').toString('utf8');
+                            console.log('[OUTPUT] Von ' + pcId + ': ' + output.trim().substring(0, 100));
+                            
                             if (!pcOutputs[pcId]) pcOutputs[pcId] = [];
                             pcOutputs[pcId].push({ 
                                 timestamp: new Date().toISOString(), 
@@ -133,6 +137,7 @@ function handleClientWebSocket(ws, url) {
                                 pcOutputs[pcId] = pcOutputs[pcId].slice(-50);
                             }
                             
+                            console.log('[BROADCAST] Sende Output an Admins');
                             broadcastToAdmins({
                                 type: 'client-output',
                                 pcId: pcId,
@@ -142,6 +147,8 @@ function handleClientWebSocket(ws, url) {
                         } catch (e) {
                             console.error('[WS OUTPUT FEHLER]', e);
                         }
+                    } else {
+                        console.log('[OUTPUT] Token mismatch oder PC nicht registriert: ' + pcId);
                     }
                     break;
             }
@@ -196,12 +203,14 @@ function sendCommandToPC(pcId, command) {
     const ws = clientConnections.get(pcId);
     if (ws && ws.readyState === WebSocket.OPEN) {
         const encrypted = encrypt(command);
+        console.log('[COMMAND] Sende an ' + pcId + ': ' + command.substring(0, 50));
         ws.send(JSON.stringify({
             type: 'command',
             data: encrypted
         }));
         return true;
     }
+    console.log('[COMMAND] PC ' + pcId + ' nicht erreichbar');
     return false;
 }
 
