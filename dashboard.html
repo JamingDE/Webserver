@@ -15,6 +15,7 @@ body { font-family: 'Courier New', monospace; background: #0c0c0c; color: #ccc; 
 #terminal .output { color: #ccc; white-space: pre-wrap; word-break: break-all; }
 #terminal .error { color: #ff6b6b; white-space: pre-wrap; word-break: break-all; }
 #terminal .info { color: #888; }
+#terminal .success { color: #00ff88; }
 #inputLine { display: flex; padding: 8px 15px; background: #1a1a1a; border-top: 1px solid #333; }
 #inputLine span { color: #00d4ff; margin-right: 8px; white-space: nowrap; }
 #cmdInput { flex: 1; background: transparent; border: none; color: #fff; font-family: 'Courier New', monospace; font-size: 13px; outline: none; }
@@ -37,7 +38,7 @@ a { color: #00d4ff; text-decoration: none; }
 <div id="terminal"></div>
 <div id="inputLine">
     <span id="promptText">PS &gt;</span>
-    <input type="text" id="cmdInput" autocomplete="off" spellcheck="false">
+    <input type="text" id="cmdInput" autocomplete="off" spellcheck="false" autofocus>
 </div>
 <script>
 var term = document.getElementById('terminal');
@@ -50,10 +51,11 @@ var history = [];
 var hIdx = -1;
 var adminWs = null;
 
-// Input immer fokussieren
+// Input sofort fokussieren
 input.focus();
+
 document.addEventListener('click', function(e) {
-    if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
+    if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A' && e.target.tagName !== 'SELECT') {
         input.focus();
     }
 });
@@ -68,7 +70,7 @@ function add(type, text) {
 
 function connectAdminWS() {
     if (adminWs && adminWs.readyState === WebSocket.OPEN) {
-        return; // Already connected
+        return;
     }
     
     var protocol = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
@@ -158,28 +160,37 @@ function removePC(id) {
     });
 }
 
-// Command input handler
+// Command input handler - FIX: Input wird jetzt korrekt geleert
 input.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
         e.preventDefault();
         var cmd = input.value.trim();
         if (!cmd) return;
         
+        // Input SOFORT leeren (nicht nach fetch)
         history.push(cmd);
         hIdx = history.length;
         var t = target.value;
         
         add('prompt', promptText.textContent + ' ' + cmd);
-        input.value = '';
-        add('info', '[SENDEN -> ' + (t === 'all' ? 'ALLE' : t) + ']');
+        input.value = ''; // <-- FIX: Hier wird Input geleert
         
         fetch('/command', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ target: t, command: cmd })
-        }).then(function() {
-            console.log('Command sent successfully');
-        }).catch(function(err) {
+        })
+        .then(function(response) {
+            return response.json();
+        })
+        .then(function(data) {
+            if (data.status) {
+                add('success', '[ERFOLG] ' + data.status);
+            } else if (data.error) {
+                add('error', '[FEHLER] ' + data.error);
+            }
+        })
+        .catch(function(err) {
             console.error('Failed to send command:', err);
             add('error', '[FEHLER] Befehl konnte nicht gesendet werden');
         });
