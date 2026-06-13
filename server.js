@@ -202,11 +202,10 @@ function broadcastToAdmins(message) {
 function sendCommandToPC(pcId, command) {
     const ws = clientConnections.get(pcId);
     if (ws && ws.readyState === WebSocket.OPEN) {
-        const encrypted = encrypt(command);
         console.log('[COMMAND] Sende an ' + pcId + ': ' + command.substring(0, 50));
         ws.send(JSON.stringify({
             type: 'command',
-            data: encrypted
+            data: command  // ← KLARTEXT, nicht verschlüsselt
         }));
         return true;
     }
