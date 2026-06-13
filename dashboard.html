@@ -16,9 +16,12 @@ body { font-family: 'Courier New', monospace; background: #0c0c0c; color: #ccc; 
 #terminal .error { color: #ff6b6b; white-space: pre-wrap; word-break: break-all; }
 #terminal .info { color: #888; }
 #terminal .success { color: #00ff88; }
-#inputLine { display: flex; padding: 8px 15px; background: #1a1a1a; border-top: 1px solid #333; }
+#inputLine { display: flex; padding: 8px 15px; background: #1a1a1a; border-top: 1px solid #333; align-items: center; }
 #inputLine span { color: #00d4ff; margin-right: 8px; white-space: nowrap; }
-#cmdInput { flex: 1; background: transparent; border: none; color: #fff; font-family: 'Courier New', monospace; font-size: 13px; outline: none; }
+#cmdInput { flex: 1; background: transparent; border: none; color: #fff; font-family: 'Courier New', monospace; font-size: 13px; outline: none; padding: 5px 0; }
+#sendBtn { background: #00d4ff; color: #000; border: none; padding: 6px 16px; border-radius: 3px; cursor: pointer; font-family: 'Courier New', monospace; font-size: 13px; font-weight: bold; margin-left: 10px; }
+#sendBtn:hover { background: #00b8d4; }
+#sendBtn:active { background: #0099aa; }
 .pc-list { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 .pc-badge { font-size: 11px; padding: 3px 8px; border-radius: 3px; display: flex; align-items: center; gap: 5px; }
 .pc-badge.on { background: #003d25; color: #00ff88; }
@@ -38,11 +41,13 @@ a { color: #00d4ff; text-decoration: none; }
 <div id="terminal"></div>
 <div id="inputLine">
     <span id="promptText">PS &gt;</span>
-    <input type="text" id="cmdInput" autocomplete="off" spellcheck="false" autofocus>
+    <input type="text" id="cmdInput" autocomplete="off" spellcheck="false" placeholder="Befehl eingeben...">
+    <button id="sendBtn">SENDEN</button>
 </div>
 <script>
 var term = document.getElementById('terminal');
 var input = document.getElementById('cmdInput');
+var sendBtn = document.getElementById('sendBtn');
 var target = document.getElementById('target');
 var promptText = document.getElementById('promptText');
 var status = document.getElementById('status');
@@ -160,41 +165,45 @@ function removePC(id) {
     });
 }
 
-// Command input handler - FIX: Input wird jetzt korrekt geleert
+// ========== COMMAND SENDEN (GETEILT FÜR ENTER UND BUTTON) ==========
+function sendCommand() {
+    var cmd = input.value.trim();
+    if (!cmd) return;
+    
+    history.push(cmd);
+    hIdx = history.length;
+    var t = target.value;
+    
+    add('prompt', promptText.textContent + ' ' + cmd);
+    input.value = '';
+    input.focus();
+    
+    fetch('/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: t, command: cmd })
+    })
+    .then(function(response) {
+        return response.json();
+    })
+    .then(function(data) {
+        if (data.status) {
+            add('success', '[ERFOLG] ' + data.status);
+        } else if (data.error) {
+            add('error', '[FEHLER] ' + data.error);
+        }
+    })
+    .catch(function(err) {
+        console.error('Failed to send command:', err);
+        add('error', '[FEHLER] Befehl konnte nicht gesendet werden');
+    });
+}
+
+// Enter Taste
 input.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
         e.preventDefault();
-        var cmd = input.value.trim();
-        if (!cmd) return;
-        
-        // Input SOFORT leeren (nicht nach fetch)
-        history.push(cmd);
-        hIdx = history.length;
-        var t = target.value;
-        
-        add('prompt', promptText.textContent + ' ' + cmd);
-        input.value = ''; // <-- FIX: Hier wird Input geleert
-        
-        fetch('/command', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ target: t, command: cmd })
-        })
-        .then(function(response) {
-            return response.json();
-        })
-        .then(function(data) {
-            if (data.status) {
-                add('success', '[ERFOLG] ' + data.status);
-            } else if (data.error) {
-                add('error', '[FEHLER] ' + data.error);
-            }
-        })
-        .catch(function(err) {
-            console.error('Failed to send command:', err);
-            add('error', '[FEHLER] Befehl konnte nicht gesendet werden');
-        });
-        
+        sendCommand();
     } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         if (hIdx > 0) {
@@ -222,6 +231,13 @@ input.addEventListener('keydown', function(e) {
             promptText.textContent = 'PS ' + target.value + ' >';
         }
     }
+});
+
+// Button Klick
+sendBtn.addEventListener('click', function(e) {
+    e.preventDefault();
+    sendCommand();
+    input.focus();
 });
 
 // Initial load
