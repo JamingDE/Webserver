@@ -16,6 +16,7 @@ body { font-family: 'Courier New', monospace; background: #0c0c0c; color: #ccc; 
 #terminal .error { color: #ff6b6b; white-space: pre-wrap; word-break: break-all; }
 #terminal .info { color: #888; }
 #terminal .success { color: #00ff88; }
+#terminal .debug { color: #666; font-style: italic; }
 #inputLine { display: flex; padding: 8px 15px; background: #1a1a1a; border-top: 1px solid #333; align-items: center; }
 #inputLine span { color: #00d4ff; margin-right: 8px; white-space: nowrap; }
 #cmdInput { flex: 1; background: transparent; border: none; color: #fff; font-family: 'Courier New', monospace; font-size: 13px; outline: none; padding: 5px 0; }
@@ -44,7 +45,22 @@ a { color: #00d4ff; text-decoration: none; }
     <input type="text" id="cmdInput" autocomplete="off" spellcheck="false" placeholder="Befehl eingeben...">
     <button id="sendBtn">SENDEN</button>
 </div>
+
 <script>
+// ========== DEBUG HELPER ==========
+function debug(msg) {
+    console.log('[DEBUG]', msg);
+    var term = document.getElementById('terminal');
+    var d = document.createElement('div');
+    d.className = 'debug';
+    d.textContent = '[DEBUG] ' + msg;
+    term.appendChild(d);
+    term.scrollTop = term.scrollHeight;
+}
+
+// ========== ELEMENTE LADEN ==========
+console.log('[INIT] Script start...');
+
 var term = document.getElementById('terminal');
 var input = document.getElementById('cmdInput');
 var sendBtn = document.getElementById('sendBtn');
@@ -52,19 +68,19 @@ var target = document.getElementById('target');
 var promptText = document.getElementById('promptText');
 var status = document.getElementById('status');
 var pcBadges = document.getElementById('pcBadges');
+
+if (!term || !input || !sendBtn || !target) {
+    console.error('[FATAL] Elements not found!');
+    alert('Fehler: DOM Elemente nicht gefunden!');
+} else {
+    console.log('[INIT] Alle Elemente geladen ✓');
+}
+
 var history = [];
 var hIdx = -1;
 var adminWs = null;
 
-// Input sofort fokussieren
-input.focus();
-
-document.addEventListener('click', function(e) {
-    if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A' && e.target.tagName !== 'SELECT') {
-        input.focus();
-    }
-});
-
+// ========== TERMINAL OUTPUT ==========
 function add(type, text) {
     var d = document.createElement('div');
     d.className = type;
@@ -73,15 +89,36 @@ function add(type, text) {
     term.scrollTop = term.scrollHeight;
 }
 
+// ========== INPUT FOKUS ==========
+input.focus();
+document.addEventListener('click', function(e) {
+    if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A' && e.target.tagName !== 'SELECT') {
+        input.focus();
+    }
+});
+
+// ========== WEBSOCKET ==========
 function connectAdminWS() {
+    debug('WebSocket verbinden...');
+    
     if (adminWs && adminWs.readyState === WebSocket.OPEN) {
+        debug('WebSocket bereits verbunden');
         return;
     }
     
     var protocol = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
-    adminWs = new WebSocket(protocol + '//' + window.location.host + '/ws?type=admin');
+    var wsUrl = protocol + '//' + window.location.host + '/ws?type=admin';
+    debug('WebSocket URL: ' + wsUrl);
+    
+    try {
+        adminWs = new WebSocket(wsUrl);
+    } catch(e) {
+        debug('WebSocket Fehler: ' + e.message);
+        return;
+    }
     
     adminWs.onopen = function() {
+        debug('WebSocket verbunden ✓');
         add('info', '[SYSTEM] WebSocket verbunden');
     };
     
@@ -96,24 +133,33 @@ function connectAdminWS() {
                 loadPCs();
             }
         } catch(e) {
-            console.error('Message parse error:', e);
+            debug('Message parse error: ' + e.message);
         }
     };
     
     adminWs.onclose = function() {
+        debug('WebSocket getrennt, reconnect in 5s...');
         add('info', '[SYSTEM] WebSocket getrennt, reconnect in 5s...');
         setTimeout(connectAdminWS, 5000);
     };
     
     adminWs.onerror = function(err) {
+        debug('WebSocket Error');
         console.error('[WS FEHLER]', err);
     };
 }
 
+// ========== PC LISTE LADEN ==========
 function loadPCs() {
+    debug('PC Liste laden...');
+    
     fetch('/pcs')
-        .then(function(r) { return r.json(); })
+        .then(function(r) { 
+            debug('PC Response Status: ' + r.status);
+            return r.json(); 
+        })
         .then(function(pcs) {
+            debug('PCs empfangen: ' + pcs.length);
             var cur = target.value;
             target.innerHTML = '<option value="all">ALLE PCs</option>';
             pcBadges.innerHTML = '';
@@ -147,12 +193,16 @@ function loadPCs() {
             }
         })
         .catch(function(err) {
+            debug('PC Load Error: ' + err.message);
             console.error('Failed to load PCs:', err);
         });
 }
 
+// ========== PC ENTFERNEN ==========
 function removePC(id) {
     if (!confirm('PC ' + id + ' wirklich entfernen?')) return;
+    debug('Entferne PC: ' + id);
+    
     fetch('/remove-pc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -161,18 +211,29 @@ function removePC(id) {
         loadPCs();
         add('info', '[SYSTEM] PC ' + id + ' entfernt');
     }).catch(function(err) {
+        debug('Remove PC Error: ' + err.message);
         console.error('Failed to remove PC:', err);
     });
 }
 
-// ========== COMMAND SENDEN (GETEILT FÜR ENTER UND BUTTON) ==========
+// ========== COMMAND SENDEN (HAUPTFUNKTION) ==========
 function sendCommand() {
     var cmd = input.value.trim();
-    if (!cmd) return;
+    
+    debug('sendCommand() aufgerufen');
+    debug('Input value: "' + cmd + '"');
+    
+    if (!cmd) {
+        debug('Input leer, abgebrochen');
+        return;
+    }
     
     history.push(cmd);
     hIdx = history.length;
     var t = target.value;
+    
+    debug('Target: ' + t);
+    debug('Schicke Befehl an Server...');
     
     add('prompt', promptText.textContent + ' ' + cmd);
     input.value = '';
@@ -184,24 +245,33 @@ function sendCommand() {
         body: JSON.stringify({ target: t, command: cmd })
     })
     .then(function(response) {
+        debug('Server Response: ' + response.status);
+        if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+        }
         return response.json();
     })
     .then(function(data) {
+        debug('Response Data: ' + JSON.stringify(data));
         if (data.status) {
             add('success', '[ERFOLG] ' + data.status);
         } else if (data.error) {
             add('error', '[FEHLER] ' + data.error);
+        } else {
+            add('info', '[RESPONSE] ' + JSON.stringify(data));
         }
     })
     .catch(function(err) {
+        debug('Command Error: ' + err.message);
         console.error('Failed to send command:', err);
-        add('error', '[FEHLER] Befehl konnte nicht gesendet werden');
+        add('error', '[FEHLER] ' + err.message);
     });
 }
 
-// Enter Taste
+// ========== ENTER TASTE ==========
 input.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
+        debug('Enter Taste gedrueckt');
         e.preventDefault();
         sendCommand();
     } else if (e.key === 'ArrowUp') {
@@ -233,17 +303,27 @@ input.addEventListener('keydown', function(e) {
     }
 });
 
-// Button Klick
+debug('Enter Event Listener registriert ✓');
+
+// ========== BUTTON KLICK ==========
 sendBtn.addEventListener('click', function(e) {
+    debug('SENDEN Button geklickt');
     e.preventDefault();
     sendCommand();
     input.focus();
 });
 
-// Initial load
+debug('Button Event Listener registriert ✓');
+
+// ========== INITIALISIERUNG ==========
+debug('Initialisiere...');
 loadPCs();
 setInterval(loadPCs, 10000);
 connectAdminWS();
+
+debug('Initialisierung abgeschlossen ✓');
+add('info', '[SYSTEM] Dashboard bereit');
 </script>
+
 </body>
 </html>
