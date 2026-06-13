@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Remote Shell</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Courier New', monospace; background: #0c0c0c; color: #ccc; height: 100vh; display: flex; flex-direction: column; }
+#topbar { background: #1a1a1a; padding: 8px 15px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #333; flex-wrap: wrap; }
+#topbar select { background: #2d2d2d; color: #fff; border: 1px solid #555; padding: 5px 10px; border-radius: 3px; }
+#topbar .status { font-size: 12px; }
+.online { color: #00ff88; }
+.offline { color: #ff4444; }
+#terminal { flex: 1; overflow-y: auto; padding: 10px; font-size: 13px; line-height: 1.4; }
+#terminal .prompt { color: #00d4ff; }
+#terminal .output { color: #ccc; white-space: pre-wrap; word-break: break-all; }
+#terminal .error { color: #ff6b6b; white-space: pre-wrap; word-break: break-all; }
+#terminal .info { color: #888; }
+#inputLine { display: flex; padding: 8px 15px; background: #1a1a1a; border-top: 1px solid #333; }
+#inputLine span { color: #00d4ff; margin-right: 8px; white-space: nowrap; }
+#cmdInput { flex: 1; background: transparent; border: none; color: #fff; font-family: 'Courier New', monospace; font-size: 13px; outline: none; }
+.pc-list { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.pc-badge { font-size: 11px; padding: 3px 8px; border-radius: 3px; display: flex; align-items: center; gap: 5px; }
+.pc-badge.on { background: #003d25; color: #00ff88; }
+.pc-badge.off { background: #3d0000; color: #ff4444; }
+.pc-badge button { background: #ff4444; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px; padding: 1px 4px; }
+a { color: #00d4ff; text-decoration: none; }
+</style>
+</head>
+<body>
+<div id="topbar">
+    <strong style="color:#00d4ff;">REMOTE SHELL</strong>
+    <select id="target"><option value="all">ALLE PCs</option></select>
+    <span class="status" id="status"></span>
+    <div class="pc-list" id="pcBadges"></div>
+    <a href="/admin/logout" style="margin-left:auto;">Logout</a>
+</div>
+<div id="terminal"></div>
+<div id="inputLine">
+    <span id="promptText">PS &gt;</span>
+    <input type="text" id="cmdInput" autofocus autocomplete="off" spellcheck="false">
+</div>
+<script>
+var term = document.getElementById('terminal');
+var input = document.getElementById('cmdInput');
+var target = document.getElementById('target');
+var promptText = document.getElementById('promptText');
+var status = document.getElementById('status');
+var pcBadges = document.getElementById('pcBadges');
+var history = [];
+var hIdx = -1;
+var adminWs = null;
+
+function add(type, text) {
+    var d = document.createElement('div');
+    d.className = type;
+    d.textContent = text;
+    term.appendChild(d);
+    term.scrollTop = term.scrollHeight;
+}
+
+function connectAdminWS() {
+    var protocol = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+    adminWs = new WebSocket(protocol + '//' + window.location.host + '/ws?type=admin');
+    
+    adminWs.onopen = function() {
+        add('info', '[SYSTEM] WebSocket verbunden');
+    };
+    
+    adminWs.onmessage = function(event) {
+        try {
+            var msg = JSON.parse(event.data);
+            if (msg.type === 'client-output') {
+                add('output', '[' + msg.pcId + ' OUTPUT]:');
+                var outputClass = (msg.output.trim().indexOf('Exit Code') === 0) ? 'error' : 'output';
+                add(outputClass, msg.output.trim());
+            } else if (msg.type === 'pc-status') {
+                loadPCs();
+            }
+        } catch(e) {}
+    };
+    
+    adminWs.onclose = function() {
+        add('info', '[SYSTEM] WebSocket getrennt, reconnect in 5s...');
+        setTimeout(connectAdminWS, 5000);
+    };
+    
+    adminWs.onerror = function(err) {
+        console.error('[WS FEHLER]', err);
+    };
+}
+
+function loadPCs() {
+    fetch('/pcs')
+        .then(function(r) { return r.json(); })
+        .then(function(pcs) {
+            var cur = target.value;
+            target.innerHTML = '<option value="all">ALLE PCs</option>';
+            pcBadges.innerHTML = '';
+            
+            pcs.forEach(function(p) {
+                var o = document.createElement('option');
+                o.value = p.id;
+                o.textContent = p.id;
+                target.appendChild(o);
+                
+                var badge = document.createElement('div');
+                badge.className = 'pc-badge ' + (p.online ? 'on' : 'off');
+                badge.innerHTML = p.id + ' ' + (p.online ? 'ON' : 'OFF') +
+                    '<button onclick="removePC(\'' + p.id + '\')" title="Entfernen">X</button>';
+                pcBadges.appendChild(badge);
+            });
+            
+            try {
+                var opt = pcs.find(function(p) { return p.id === cur; });
+                target.value = opt ? opt.id : 'all';
+            } catch(e) {}
+            
+            var n = pcs.filter(function(p) { return p.online; }).length;
+            status.textContent = n + ' online';
+            status.className = n > 0 ? 'status online' : 'status offline';
+            
+            if (target.value === 'all') {
+                promptText.textContent = 'PS (ALL) >';
+            } else {
+                promptText.textContent = 'PS ' + target.value + ' >';
+            }
+        });
+}
+
+function removePC(id) {
+    if (!confirm('PC ' + id + ' wirklich entfernen?')) return;
+    fetch('/remove-pc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pcId: id })
+    }).then(function() {
+        loadPCs();
+        add('info', '[SYSTEM] PC ' + id + ' entfernt');
+    });
+}
+
+input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        var cmd = input.value.trim();
+        if (!cmd) return;
+        history.push(cmd);
+        hIdx = history.length;
+        var t = target.value;
+        add('prompt', promptText.textContent + ' ' + cmd);
+        input.value = '';
+        add('info', '[SENDEN -> ' + (t === 'all' ? 'ALLE' : t) + ']');
+        
+        fetch('/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: t, command: cmd })
+        }).catch(function() {});
+        
+    } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (hIdx > 0) {
+            hIdx--;
+            input.value = history[hIdx];
+        }
+    } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (hIdx < history.length - 1) {
+            hIdx++;
+            input.value = history[hIdx];
+        } else {
+            hIdx = history.length;
+            input.value = '';
+        }
+    } else if (e.key === 'Tab') {
+        e.preventDefault();
+        var opts = Array.from(target.options);
+        var idx = target.selectedIndex;
+        target.selectedIndex = (idx + 1) % opts.length;
+        
+        if (target.value === 'all') {
+            promptText.textContent = 'PS (ALL) >';
+        } else {
+            promptText.textContent = 'PS ' + target.value + ' >';
+        }
+    }
+});
+
+loadPCs();
+setInterval(loadPCs, 10000);
+connectAdminWS();
+document.addEventListener('click', function() { input.focus(); });
+</script>
+</body>
+</html>
