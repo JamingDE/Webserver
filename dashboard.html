@@ -37,7 +37,7 @@ a { color: #00d4ff; text-decoration: none; }
 <div id="terminal"></div>
 <div id="inputLine">
     <span id="promptText">PS &gt;</span>
-    <input type="text" id="cmdInput" autofocus autocomplete="off" spellcheck="false">
+    <input type="text" id="cmdInput" autocomplete="off" spellcheck="false">
 </div>
 <script>
 var term = document.getElementById('terminal');
@@ -50,6 +50,14 @@ var history = [];
 var hIdx = -1;
 var adminWs = null;
 
+// Input immer fokussieren
+input.focus();
+document.addEventListener('click', function(e) {
+    if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A') {
+        input.focus();
+    }
+});
+
 function add(type, text) {
     var d = document.createElement('div');
     d.className = type;
@@ -59,6 +67,10 @@ function add(type, text) {
 }
 
 function connectAdminWS() {
+    if (adminWs && adminWs.readyState === WebSocket.OPEN) {
+        return; // Already connected
+    }
+    
     var protocol = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
     adminWs = new WebSocket(protocol + '//' + window.location.host + '/ws?type=admin');
     
@@ -76,7 +88,9 @@ function connectAdminWS() {
             } else if (msg.type === 'pc-status') {
                 loadPCs();
             }
-        } catch(e) {}
+        } catch(e) {
+            console.error('Message parse error:', e);
+        }
     };
     
     adminWs.onclose = function() {
@@ -124,6 +138,9 @@ function loadPCs() {
             } else {
                 promptText.textContent = 'PS ' + target.value + ' >';
             }
+        })
+        .catch(function(err) {
+            console.error('Failed to load PCs:', err);
         });
 }
 
@@ -136,16 +153,22 @@ function removePC(id) {
     }).then(function() {
         loadPCs();
         add('info', '[SYSTEM] PC ' + id + ' entfernt');
+    }).catch(function(err) {
+        console.error('Failed to remove PC:', err);
     });
 }
 
+// Command input handler
 input.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
+        e.preventDefault();
         var cmd = input.value.trim();
         if (!cmd) return;
+        
         history.push(cmd);
         hIdx = history.length;
         var t = target.value;
+        
         add('prompt', promptText.textContent + ' ' + cmd);
         input.value = '';
         add('info', '[SENDEN -> ' + (t === 'all' ? 'ALLE' : t) + ']');
@@ -154,7 +177,12 @@ input.addEventListener('keydown', function(e) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ target: t, command: cmd })
-        }).catch(function() {});
+        }).then(function() {
+            console.log('Command sent successfully');
+        }).catch(function(err) {
+            console.error('Failed to send command:', err);
+            add('error', '[FEHLER] Befehl konnte nicht gesendet werden');
+        });
         
     } else if (e.key === 'ArrowUp') {
         e.preventDefault();
@@ -185,10 +213,10 @@ input.addEventListener('keydown', function(e) {
     }
 });
 
+// Initial load
 loadPCs();
 setInterval(loadPCs, 10000);
 connectAdminWS();
-document.addEventListener('click', function() { input.focus(); });
 </script>
 </body>
 </html>
