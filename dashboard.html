@@ -228,14 +228,17 @@ function sendCommand() {
         return;
     }
     
-    // WICHTIG: Werte SPEICHERN bevor loadPCs() interferieren kann
     debug('Step 1: speichern Werte');
-    var t = target.value;  // SOFORT speichern!
+    var t = target.value;
     var prompt = promptText.textContent;
     
     debug('Target: ' + t);
-    debug('Step 2: history push');
+    debug('Prompt: ' + prompt);
+    
+    debug('Step 2a: history type = ' + typeof history);
+    debug('Step 2b: push cmd');
     history.push(cmd);
+    debug('Step 2c: hIdx update');
     hIdx = history.length;
     
     debug('Step 3: add prompt');
