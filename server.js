@@ -417,7 +417,7 @@ async function loadPCs() {
         const badge = document.createElement('div');
         badge.className = 'pc-badge ' + (p.online ? 'on' : 'off');
         badge.innerHTML = p.id + ' ' + (p.online ? 'ON' : 'OFF') +
-            '<button onclick="removePC(\\\\'' + p.id + '\\\\')" title="Entfernen">X</button>';
+            '<button onclick="removePC(\'' + p.id + '\')" title="Entfernen">X</button>';
         pcBadges.appendChild(badge);
     });
     try {
