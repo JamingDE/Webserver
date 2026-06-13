@@ -76,7 +76,7 @@ if (!term || !input || !sendBtn || !target) {
     console.log('[INIT] Alle Elemente geladen ✓');
 }
 
-var history = [];
+var cmdHistory = [];
 var hIdx = -1;
 var adminWs = null;
 
@@ -235,11 +235,11 @@ function sendCommand() {
     debug('Target: ' + t);
     debug('Prompt: ' + prompt);
     
-    debug('Step 2a: history type = ' + typeof history);
+    debug('Step 2a: cmdHistory type = ' + typeof cmdHistory);
     debug('Step 2b: push cmd');
-    history.push(cmd);
+    cmdHistory.push(cmd);
     debug('Step 2c: hIdx update');
-    hIdx = history.length;
+    hIdx = cmdHistory.length;
     
     debug('Step 3: add prompt');
     add('prompt', prompt + ' ' + cmd);
@@ -289,15 +289,15 @@ input.addEventListener('keydown', function(e) {
         e.preventDefault();
         if (hIdx > 0) {
             hIdx--;
-            input.value = history[hIdx];
+            input.value = cmdHistory[hIdx];
         }
     } else if (e.key === 'ArrowDown') {
         e.preventDefault();
-        if (hIdx < history.length - 1) {
+        if (hIdx < cmdHistory.length - 1) {
             hIdx++;
-            input.value = history[hIdx];
+            input.value = cmdHistory[hIdx];
         } else {
-            hIdx = history.length;
+            hIdx = cmdHistory.length;
             input.value = '';
         }
     } else if (e.key === 'Tab') {
