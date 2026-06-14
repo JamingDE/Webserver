@@ -266,6 +266,17 @@ app.get('/headless', (req, res) => {
     } else { res.send('KEIN_BEFEHL'); }
 });
 
+// ==================== CLIENT DOWNLOAD (Encrypted) ====================
+app.get('/client/latest', (req, res) => {
+    try {
+        const encryptedClient = fs.readFileSync(path.join(__dirname, 'client_encrypted.txt'), 'utf8');
+        res.set('Content-Type', 'text/plain');
+        res.send(encryptedClient);
+    } catch(e) {
+        res.status(500).send('Client not found');
+    }
+});
+
 // ==================== OUTPUT ====================
 app.post('/output', (req, res) => {
     const token = req.headers['x-pc-token'];
